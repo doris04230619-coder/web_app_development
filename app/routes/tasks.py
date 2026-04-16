@@ -1,47 +1,179 @@
-from flask import Blueprint
+from flask import Blueprint, render_template, request, redirect, url_for, flash, session
+from app.models.task import Task
+from app.models.category import Category
 
-# tasks_bp 將作為首頁的主要邏輯整合
-tasks_bp = Blueprint('tasks', __name__)
+main_bp = Blueprint('main', __name__)
 
-@tasks_bp.route('/')
+def login_required(f):
+    def wrap(*args, **kwargs):
+        if 'user_id' not in session:
+            flash('請先登入。', 'error')
+            return redirect(url_for('auth.login'))
+        return f(*args, **kwargs)
+    wrap.__name__ = f.__name__
+    return wrap
+
+@main_bp.route('/')
+@login_required
 def index():
-    """
-    GET: 驗證使用者登入狀態。若已登入，撈取其全部 Tasks 與 Categories，渲染 index.html；若未登入則導向 /auth/login。
-    """
-    pass
+    user_id = session['user_id']
+    tasks = Task.get_all(user_id=user_id)
+    categories = Category.get_all(user_id=user_id)
+    return render_template('index.html', tasks=tasks, categories=categories)
 
-@tasks_bp.route('/tasks/create', methods=['POST'])
+@main_bp.route('/tasks/create', methods=['POST'])
+@login_required
 def create_task():
-    """
-    POST: 接收表單資料 (title, category_id, priority, due_date等)，
-          寫入 TaskModel 後，重導向至首頁 `/`
-    """
-    pass
+    user_id = session['user_id']
+    title = request.form.get('title')
+    category_id = request.form.get('category_id')
+    priority = request.form.get('priority', 'medium')
+    due_date = request.form.get('due_date')
 
-@tasks_bp.route('/tasks/<int:task_id>/edit', methods=['GET'])
-def edit_task(task_id):
-    """
-    GET: 確保使用者有權限，根據 task_id 取得該筆任務詳細資料，並渲染編輯頁面 (tasks/edit.html)
-    """
-    pass
+    if not title:
+        flash('任務標題為必填欄位。', 'error')
+        return redirect(url_for('main.index'))
 
-@tasks_bp.route('/tasks/<int:task_id>/update', methods=['POST'])
-def update_task(task_id):
-    """
-    POST: 接收修改後的標題、期限與優先級等資料，更新資料庫，完成後導向首頁
-    """
-    pass
+    # If category_id is empty string, set it to None
+    if category_id == '':
+        category_id = None
 
-@tasks_bp.route('/tasks/<int:task_id>/delete', methods=['POST'])
-def delete_task(task_id):
-    """
-    POST: 驗證擁有權，將對應 task_id 的任務從 DB 刪除，並導向首頁
-    """
-    pass
+    data = {
+        'user_id': user_id,
+        'title': title,
+        'category_id': category_id,
+        'priority': priority,
+        'due_date': due_date
+    }
+    
+    if Task.create(data):
+        flash('任務建立成功！', 'success')
+    else:
+        flash('任務建立失敗。', 'error')
 
-@tasks_bp.route('/tasks/<int:task_id>/toggle', methods=['POST'])
-def toggle_task(task_id):
-    """
-    POST: 切換任務狀態 (pending 至 completed 或是反過來)，並導向首頁
-    """
-    pass
+    return redirect(url_for('main.index'))
+
+@main_bp.route('/tasks/<int:id>/edit')
+@login_required
+def edit_task(id):
+    user_id = session['user_id']
+    task = Task.get_by_id(id)
+    
+    if not task or task['user_id'] != user_id:
+        flash('找不到該任務或無權限編輯。', 'error')
+        return redirect(url_for('main.index'))
+        
+    categories = Category.get_all(user_id=user_id)
+    return render_template('tasks/edit.html', task=task, categories=categories)
+
+@main_bp.route('/tasks/<int:id>/update', methods=['POST'])
+@login_required
+def update_task(id):
+    user_id = session['user_id']
+    task = Task.get_by_id(id)
+    
+    if not task or task['user_id'] != user_id:
+        flash('找不到該任務或無權限操作。', 'error')
+        return redirect(url_for('main.index'))
+
+    title = request.form.get('title')
+    category_id = request.form.get('category_id')
+    priority = request.form.get('priority', 'medium')
+    due_date = request.form.get('due_date')
+
+    if not title:
+        flash('任務標題為必填欄位。', 'error')
+        return redirect(url_for('main.edit_task', id=id))
+        
+    # If category_id is empty string, set it to None
+    if category_id == '':
+        category_id = None
+
+    data = {
+        'title': title,
+        'category_id': category_id,
+        'priority': priority,
+        'due_date': due_date
+    }
+    
+    if Task.update(id, data):
+        flash('任務更新成功！', 'success')
+    else:
+        flash('任務更新失敗。', 'error')
+        
+    return redirect(url_for('main.index'))
+
+@main_bp.route('/tasks/<int:id>/delete', methods=['POST'])
+@login_required
+def delete_task(id):
+    user_id = session['user_id']
+    task = Task.get_by_id(id)
+    
+    if not task or task['user_id'] != user_id:
+        flash('找不到該任務或無權限操作。', 'error')
+        return redirect(url_for('main.index'))
+
+    if Task.delete(id):
+        flash('任務已刪除。', 'success')
+    else:
+        flash('任務刪除失敗。', 'error')
+
+    return redirect(url_for('main.index'))
+
+@main_bp.route('/tasks/<int:id>/toggle', methods=['POST'])
+@login_required
+def toggle_task(id):
+    user_id = session['user_id']
+    task = Task.get_by_id(id)
+    
+    if not task or task['user_id'] != user_id:
+        flash('找不到該任務或無權限操作。', 'error')
+        return redirect(url_for('main.index'))
+
+    new_status = 'completed' if task['status'] == 'pending' else 'pending'
+    
+    if Task.update(id, {'status': new_status}):
+        flash(f"任務標示為 {'已完成' if new_status == 'completed' else '未完成'}。", 'success')
+    else:
+        flash('狀態更新失敗。', 'error')
+
+    return redirect(url_for('main.index'))
+
+@main_bp.route('/categories/create', methods=['POST'])
+@login_required
+def create_category():
+    user_id = session['user_id']
+    name = request.form.get('name')
+
+    if not name:
+        flash('分類名稱為必填欄位。', 'error')
+        return redirect(url_for('main.index'))
+
+    data = {
+        'user_id': user_id,
+        'name': name
+    }
+    
+    if Category.create(data):
+        flash('分類建立成功！', 'success')
+    else:
+        flash('分類建立失敗。', 'error')
+
+    return redirect(url_for('main.index'))
+
+@main_bp.route('/categories/<int:id>/delete', methods=['POST'])
+@login_required
+def delete_category(id):
+    user_id = session['user_id']
+    category = Category.get_by_id(id)
+    
+    if not category or category['user_id'] != user_id:
+        flash('找不到該分類或無權限操作。', 'error')
+        return redirect(url_for('main.index'))
+
+    if Category.delete(id):
+        flash('分類已刪除。', 'success')
+    else:
+        flash('分類刪除失敗。', 'error')
+
+    return redirect(url_for('main.index'))
